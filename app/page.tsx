@@ -52,6 +52,8 @@ export default function PodcastBuilder() {
   const [selectedText, setSelectedText] = useState("")
   const [selectionStart, setSelectionStart] = useState(0)
   const [selectionEnd, setSelectionEnd] = useState(0)
+  const [selectedStartIndex, setSelectedStartIndex] = useState<number | null>(null)
+  const [selectedEndIndex, setSelectedEndIndex] = useState<number | null>(null)
   const [showRegenerateDialog, setShowRegenerateDialog] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
   const [audioSegments, setAudioSegments] = useState<AudioSegment[]>([])
@@ -69,11 +71,15 @@ export default function PodcastBuilder() {
   const textRef = useRef<HTMLDivElement>(null)
   const mergeOriginalAudioRef = useRef<HTMLAudioElement>(null)
   const mergeNewAudioRef = useRef<HTMLAudioElement>(null)
+  const mergePreviewAudioRef = useRef<HTMLAudioElement>(null)
 
   const [mergeOriginalClipUrl, setMergeOriginalClipUrl] = useState<string>("")
   const [mergeOriginalClipBlob, setMergeOriginalClipBlob] = useState<Blob | null>(null)
   const [mergeOriginalCurrentTime, setMergeOriginalCurrentTime] = useState(0)
   const [mergeNewCurrentTime, setMergeNewCurrentTime] = useState(0)
+  const [mergePreviewCurrentTime, setMergePreviewCurrentTime] = useState(0)
+  const [mergePreviewUrl, setMergePreviewUrl] = useState<string>("")
+  const [mergePreviewBlob, setMergePreviewBlob] = useState<Blob | null>(null)
 
   const words = script.split(/\s+/).filter((word) => word.length > 0)
 
@@ -182,20 +188,37 @@ export default function PodcastBuilder() {
     const selection = window.getSelection()
     if (!selection || selection.rangeCount === 0) return
 
-    const selectedText = selection.toString().trim()
-    if (!selectedText) return
+    const text = selection.toString().trim()
+    if (!text) return
 
     const range = selection.getRangeAt(0)
-    const textContent = textRef.current?.textContent || ""
+    const getIndexFromNode = (node: Node | null): number | null => {
+      if (!node) return null
+      let el: HTMLElement | null = (node as HTMLElement).nodeType === 1 ? (node as HTMLElement) : (node.parentElement as HTMLElement | null)
+      while (el && el !== textRef.current) {
+        if (el.dataset && el.dataset.wordIndex) return parseInt(el.dataset.wordIndex, 10)
+        el = el.parentElement
+      }
+      return null
+    }
 
-    // Find the start and end positions in the full text
-    const beforeSelection = textContent.substring(0, range.startOffset)
-    const selectionStart = beforeSelection.length
-    const selectionEnd = selectionStart + selectedText.length
+    const anchorIndex = getIndexFromNode(selection.anchorNode)
+    const focusIndex = getIndexFromNode(selection.focusNode)
+    if (anchorIndex === null || focusIndex === null) return
 
-    setSelectedText(selectedText)
-    setSelectionStart(selectionStart)
-    setSelectionEnd(selectionEnd)
+    const startIdx = Math.max(0, Math.min(anchorIndex, focusIndex))
+    const endIdxExclusive = Math.min(words.length, Math.max(anchorIndex, focusIndex) + 1)
+
+    const selected = words.slice(startIdx, endIdxExclusive).join(" ")
+
+    // Also keep legacy char offsets for any other consumers
+    const before = words.slice(0, startIdx).join(" ")
+    const sel = selected
+    setSelectedText(sel)
+    setSelectionStart(before.length)
+    setSelectionEnd(before.length + sel.length)
+    setSelectedStartIndex(startIdx)
+    setSelectedEndIndex(endIdxExclusive)
     setShowRegenerateDialog(true)
   }
 
@@ -268,28 +291,11 @@ export default function PodcastBuilder() {
   }
 
   const playSelectedText = () => {
-    if (!selectedText.trim() || !audioData) return
-
-    // Find matching audio segment
-    const beforeText = script.substring(0, selectionStart)
-    const beforeWords = beforeText.split(/\s+/).filter((word) => word.length > 0)
-    const startWordIndex = beforeWords.length
-
-    const matchingSegment = audioSegments.find(
-      (seg) => seg.startIndex <= startWordIndex && seg.endIndex > startWordIndex,
-    )
-
-    if (matchingSegment && audioRef.current) {
-      // Play the regenerated segment
-      audioRef.current.src = matchingSegment.audioUrl
-      audioRef.current.play()
-    } else if (audioRef.current) {
-      // Calculate approximate time position in original audio
-      const progress = startWordIndex / words.length
-      const startTime = progress * audioRef.current.duration
-      audioRef.current.currentTime = startTime
-      audioRef.current.play()
-    }
+    if (!audioRef.current || selectedStartIndex === null) return
+    const totalDuration = audioRef.current.duration || audioData?.duration || 0
+    const progress = selectedStartIndex / Math.max(1, words.length)
+    audioRef.current.currentTime = progress * totalDuration
+    audioRef.current.play()
   }
 
   const togglePlayPause = () => {
@@ -331,7 +337,8 @@ export default function PodcastBuilder() {
       wordIndex = currentSegment.startIndex + Math.floor(segmentProgress * segmentWordCount)
     } else {
       // Use original audio timing
-    const progress = time / audioRef.current.duration
+      const duration = Math.max(1e-6, audioRef.current.duration)
+      const progress = time / duration
       wordIndex = Math.floor(progress * words.length)
     }
     
@@ -355,17 +362,12 @@ export default function PodcastBuilder() {
 
     setIsExporting(true)
     try {
-      // If there are audio segments, we need to merge them first
-      let finalAudioUrl = audioData.url
-      
-      if (audioSegments.length > 0) {
-        // Create merged audio (simplified approach)
-        finalAudioUrl = await createMergedAudio()
-      }
-
-      // Convert to WAV format (simplified - in reality you'd need proper audio conversion)
-      const response = await fetch(finalAudioUrl)
-      const blob = await response.blob()
+      // Always export the currently active audio by decoding and re-encoding to WAV
+      const response = await fetch(audioData.url)
+      const arrayBuffer = await response.arrayBuffer()
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const buffer = await audioContext.decodeAudioData(arrayBuffer)
+      const blob = await audioBufferToBlob(buffer)
       
       // Create download link
       const url = URL.createObjectURL(blob)
@@ -393,58 +395,32 @@ export default function PodcastBuilder() {
     }
 
     try {
-      // Create audio context for merging
+      // Proper splice-based merging
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
-      
-      // Load main audio
-      const mainResponse = await fetch(audioData.url)
-      const mainArrayBuffer = await mainResponse.arrayBuffer()
-      const mainAudioBuffer = await audioContext.decodeAudioData(mainArrayBuffer)
-      
-      // Create a new buffer for the merged audio
-      const mergedBuffer = audioContext.createBuffer(
-        mainAudioBuffer.numberOfChannels,
-        mainAudioBuffer.length,
-        mainAudioBuffer.sampleRate
-      )
-      
-      // Copy main audio to merged buffer
-      for (let channel = 0; channel < mainAudioBuffer.numberOfChannels; channel++) {
-        const mainData = mainAudioBuffer.getChannelData(channel)
-        const mergedData = mergedBuffer.getChannelData(channel)
-        mergedData.set(mainData)
+      // Decode base
+      const baseResp = await fetch(audioData.url)
+      const baseBuf = await audioContext.decodeAudioData(await baseResp.arrayBuffer())
+
+      // Sort segments by startIndex, compute start/end seconds from indices
+      const sorted = [...audioSegments].sort((a, b) => a.startIndex - b.startIndex)
+
+      const indexToTime = (idx: number) => (idx / Math.max(1, words.length)) * baseBuf.duration
+
+      let working = baseBuf
+      let appliedOffset = 0 // seconds diff accumulated
+
+      for (const seg of sorted) {
+        const segResp = await fetch(seg.audioUrl)
+        const segBuf = await audioContext.decodeAudioData(await segResp.arrayBuffer())
+
+        const startSec = indexToTime(seg.startIndex) + appliedOffset
+        const endSec = indexToTime(seg.endIndex) + appliedOffset
+        const spliced = spliceBuffer(audioContext, working, startSec, endSec, segBuf)
+        appliedOffset += segBuf.duration - (endSec - startSec)
+        working = spliced
       }
-      
-      // Overlay regenerated segments
-      for (const segment of audioSegments) {
-        try {
-          const segmentResponse = await fetch(segment.audioUrl)
-          const segmentArrayBuffer = await segmentResponse.arrayBuffer()
-          const segmentAudioBuffer = await audioContext.decodeAudioData(segmentArrayBuffer)
-          
-          const startSample = Math.floor(segment.startTime * mainAudioBuffer.sampleRate)
-          const segmentLength = Math.min(
-            segmentAudioBuffer.length,
-            mainAudioBuffer.length - startSample
-          )
-          
-          for (let channel = 0; channel < Math.min(mainAudioBuffer.numberOfChannels, segmentAudioBuffer.numberOfChannels); channel++) {
-            const segmentData = segmentAudioBuffer.getChannelData(channel)
-            const mergedData = mergedBuffer.getChannelData(channel)
-            
-            for (let i = 0; i < segmentLength; i++) {
-              if (startSample + i < mergedData.length) {
-                mergedData[startSample + i] = segmentData[i]
-              }
-            }
-          }
-        } catch (error) {
-          console.warn('Failed to merge segment:', error)
-        }
-      }
-      
-      // Convert merged buffer back to blob URL
-      const mergedBlob = await audioBufferToBlob(mergedBuffer)
+
+      const mergedBlob = await audioBufferToBlob(working)
       return URL.createObjectURL(mergedBlob)
       
     } catch (error) {
@@ -452,6 +428,34 @@ export default function PodcastBuilder() {
       // Fallback to original audio
       return audioData?.url || ""
     }
+  }
+
+  const spliceBuffer = (
+    ctx: AudioContext,
+    base: AudioBuffer,
+    startSec: number,
+    endSec: number,
+    replacement: AudioBuffer
+  ): AudioBuffer => {
+    const sr = base.sampleRate
+    const start = Math.max(0, Math.floor(startSec * sr))
+    const end = Math.max(start, Math.floor(endSec * sr))
+    const headLen = start
+    const tailLen = Math.max(0, base.length - end)
+    const outLen = headLen + replacement.length + tailLen
+    const out = ctx.createBuffer(base.numberOfChannels, outLen, sr)
+    for (let ch = 0; ch < base.numberOfChannels; ch++) {
+      const outData = out.getChannelData(ch)
+      const baseData = base.getChannelData(ch)
+      // head
+      outData.set(baseData.subarray(0, headLen), 0)
+      // replacement
+      const repData = replacement.getChannelData(Math.min(ch, replacement.numberOfChannels - 1))
+      outData.set(repData, headLen)
+      // tail
+      outData.set(baseData.subarray(end), headLen + replacement.length)
+    }
+    return out
   }
 
   const audioBufferToBlob = async (audioBuffer: AudioBuffer): Promise<Blob> => {
@@ -526,7 +530,18 @@ export default function PodcastBuilder() {
     if (!mergePreview) return
 
     try {
-      // Update segments array
+      // Create the merged audio preview result and apply it to main audio
+      const mergedUrl = await createMergedFromCurrent(mergePreview.newSegment)
+      if (mergedUrl) {
+        // Decode to get accurate duration and blob
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+        const resp = await fetch(mergedUrl)
+        const buf = await audioContext.decodeAudioData(await resp.arrayBuffer())
+        const mergedBlob = await audioBufferToBlob(buf)
+        setAudioData({ url: URL.createObjectURL(mergedBlob), duration: buf.duration, waveform: audioData!.waveform, blob: mergedBlob })
+      }
+
+      // Track the segment for text highlighting only
       setAudioSegments((prev) => {
         const filtered = prev.filter(
           (seg) => 
@@ -547,6 +562,21 @@ export default function PodcastBuilder() {
     }
   }
 
+  const createMergedFromCurrent = async (segment: AudioSegment): Promise<string> => {
+    if (!audioData) return ""
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+    const baseResp = await fetch(audioData.url)
+    const baseBuf = await audioContext.decodeAudioData(await baseResp.arrayBuffer())
+    const segResp = await fetch(segment.audioUrl)
+    const segBuf = await audioContext.decodeAudioData(await segResp.arrayBuffer())
+    // Approximate mapping from word index to current audio time
+    const startSec = (segment.startIndex / Math.max(1, words.length)) * baseBuf.duration
+    const endSec = (segment.endIndex / Math.max(1, words.length)) * baseBuf.duration
+    const merged = spliceBuffer(audioContext, baseBuf, startSec, endSec, segBuf)
+    const mergedBlob = await audioBufferToBlob(merged)
+    return URL.createObjectURL(mergedBlob)
+  }
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
@@ -563,26 +593,35 @@ export default function PodcastBuilder() {
   }, [historyIndex, history])
 
   useEffect(() => {
-    const setupMergeClip = async () => {
-      if (!showMergeDialog || !mergePreview || !audioData) return
+    // Build a full-length preview with the new segment spliced in
+    const setupMergePreview = async () => {
+      if (!showMergeDialog || !mergePreview) return
       try {
-        const blob = await createAudioClipBlob(
-          audioData.url,
-          mergePreview.newSegment.startTime,
-          mergePreview.newSegment.endTime,
-        )
-        setMergeOriginalClipBlob(blob)
-        const url = URL.createObjectURL(blob)
-        setMergeOriginalClipUrl(url)
+        const url = await createMergedFromCurrent(mergePreview.newSegment)
+        setMergePreviewUrl(url)
+        const blob = await fetch(url).then(r => r.blob())
+        setMergePreviewBlob(blob)
       } catch (e) {
-        console.warn('Failed to create original clip blob:', e)
+        console.warn('Failed to create merge preview:', e)
       }
     }
-    setupMergeClip()
+    setupMergePreview()
     return () => {
-      if (mergeOriginalClipUrl) URL.revokeObjectURL(mergeOriginalClipUrl)
+      if (mergePreviewUrl) URL.revokeObjectURL(mergePreviewUrl)
     }
-  }, [showMergeDialog, mergePreview, audioData])
+  }, [showMergeDialog, mergePreview])
+
+  // Ensure we use actual media duration to avoid drift
+  useEffect(() => {
+    const el = audioRef.current
+    if (!el) return
+    const onLoaded = () => {
+      const dur = isFinite(el.duration) ? el.duration : audioData?.duration || 0
+      if (audioData) setAudioData({ ...audioData, duration: dur })
+    }
+    el.addEventListener('loadedmetadata', onLoaded)
+    return () => el.removeEventListener('loadedmetadata', onLoaded)
+  }, [audioRef.current, audioData])
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -666,6 +705,7 @@ export default function PodcastBuilder() {
                 {words.map((word, index) => (
                   <span
                     key={index}
+                    data-word-index={index}
                     className={`${
                       index === highlightedWordIndex
                         ? "bg-blue-200 dark:bg-blue-800 text-blue-900 dark:text-blue-100"
@@ -752,8 +792,8 @@ export default function PodcastBuilder() {
                     
                     {/* Overlay regenerated segments */}
                     {audioSegments.map((segment, index) => {
-                      const startPercent = (segment.startTime / audioData.duration) * 100
-                      const widthPercent = ((segment.endTime - segment.startTime) / audioData.duration) * 100
+                      const startPercent = (segment.startIndex / Math.max(1, words.length)) * 100
+                      const widthPercent = ((segment.endIndex - segment.startIndex) / Math.max(1, words.length)) * 100
                       return (
                         <div
                           key={index}
@@ -870,93 +910,51 @@ export default function PodcastBuilder() {
                     </div>
                   </div>
 
-                  {/* Audio Segments */}
-                  <div className="space-y-4">
-                    {/* Original Audio Waveform (exact clip) */}
-                    <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <Volume2 className="h-4 w-4 text-orange-500" />
-                        <span className="text-sm font-medium">Original Audio (selected clip)</span>
-                        <div className="ml-auto">
-                          <Button size="sm" variant="outline" onClick={() => {
-                            const el = mergeOriginalAudioRef.current
-                            if (!el) return
-                            if (el.paused) { el.currentTime = 0; el.play() } else { el.pause() }
-                          }}>
-                            {(mergeOriginalAudioRef.current && !mergeOriginalAudioRef.current.paused) ? 'Pause' : 'Play'}
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="w-full h-16 border rounded bg-muted/50 overflow-hidden">
-                        {mergeOriginalClipBlob && (
-                          <AudioVisualizer
-                            blob={mergeOriginalClipBlob}
-                            width={800}
-                            height={64}
-                            barWidth={2}
-                            gap={1}
-                            barColor="rgb(251, 146, 60)"
-                            barPlayedColor="rgb(251, 146, 60)"
-                            currentTime={mergeOriginalCurrentTime}
-                            style={{ width: '100%', height: '100%' }}
-                          />
-                        )}
+                  {/* Full merged preview */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <Volume2 className="h-4 w-4 text-teal-600" />
+                      <span className="text-sm font-medium">Preview: Full audio with replacement</span>
+                      <div className="ml-auto flex items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => {
+                          const el = mergePreviewAudioRef.current
+                          if (!el) return
+                          if (el.paused) { el.currentTime = 0; el.play() } else { el.pause() }
+                        }}>
+                          {(mergePreviewAudioRef.current && !mergePreviewAudioRef.current.paused) ? 'Pause' : 'Play'}
+                        </Button>
                       </div>
                     </div>
-
-                    {/* New Regenerated Audio */}
-                    <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <Volume2 className="h-4 w-4 text-teal-500" />
-                        <span className="text-sm font-medium">Regenerated Audio</span>
-                        <div className="ml-auto">
-                          <Button size="sm" variant="outline" onClick={() => {
-                            const el = mergeNewAudioRef.current
-                            if (!el) return
-                            if (el.paused) { el.currentTime = 0; el.play() } else { el.pause() }
-                          }}>
-                            {(mergeNewAudioRef.current && !mergeNewAudioRef.current.paused) ? 'Pause' : 'Play'}
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="w-full h-16 border rounded bg-muted/50 overflow-hidden">
-                        {mergePreview.newSegment.blob && (
-                          <AudioVisualizer
-                            blob={mergePreview.newSegment.blob}
-                            width={800}
-                            height={64}
-                            barWidth={2}
-                            gap={1}
-                            barColor="rgb(20, 184, 166)"
-                            barPlayedColor="rgb(20, 184, 166)"
-                            currentTime={mergeNewCurrentTime}
-                            style={{ width: '100%', height: '100%' }}
-                          />
-                        )}
-                      </div>
+                    <div className="relative w-full h-28 border rounded bg-muted/50 overflow-hidden">
+                      {mergePreviewBlob && (
+                        <AudioVisualizer
+                          blob={mergePreviewBlob}
+                          width={800}
+                          height={100}
+                          barWidth={2}
+                          gap={1}
+                          barColor="rgb(249, 115, 22)"
+                          barPlayedColor="rgb(249, 115, 22)"
+                          currentTime={mergePreviewCurrentTime}
+                          style={{ width: '100%', height: '100%' }}
+                        />
+                      )}
                     </div>
                   </div>
                 </div>
 
                 <div className="p-4 bg-blue-50 dark:bg-blue-950/20 rounded-lg border border-blue-200 dark:border-blue-800">
                   <p className="text-sm text-blue-800 dark:text-blue-200">
-                    The regenerated audio will replace the selected portion. You can preview both versions above before merging.
+                    The regenerated audio will replace the selected portion. Preview the complete result above before merging.
                   </p>
                 </div>
 
-                {/* Hidden audio elements for preview */}
+                {/* Hidden audio element for merged preview */}
                 <audio
-                  ref={mergeOriginalAudioRef}
-                  src={mergeOriginalClipUrl}
-                  onTimeUpdate={() => setMergeOriginalCurrentTime(mergeOriginalAudioRef.current?.currentTime || 0)}
-                  onEnded={() => setMergeOriginalCurrentTime(0)}
-                  style={{ display: 'none' }}
-                />
-                <audio
-                  ref={mergeNewAudioRef}
-                  src={mergePreview.newSegment.audioUrl}
-                  onTimeUpdate={() => setMergeNewCurrentTime(mergeNewAudioRef.current?.currentTime || 0)}
-                  onEnded={() => setMergeNewCurrentTime(0)}
+                  ref={mergePreviewAudioRef}
+                  src={mergePreviewUrl}
+                  onTimeUpdate={() => setMergePreviewCurrentTime(mergePreviewAudioRef.current?.currentTime || 0)}
+                  onEnded={() => setMergePreviewCurrentTime(0)}
                   style={{ display: 'none' }}
                 />
               </div>
