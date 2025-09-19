@@ -162,24 +162,27 @@ export default function PodcastBuilder() {
   }
 
   const handleTextSelection = () => {
-    const selection = window.getSelection()
-    if (!selection || selection.rangeCount === 0) return
+    // Use a small delay to ensure selection is properly set on mobile
+    setTimeout(() => {
+      const selection = window.getSelection()
+      if (!selection || selection.rangeCount === 0) return
 
-    const selectedText = selection.toString().trim()
-    if (!selectedText) return
+      const selectedText = selection.toString().trim()
+      if (!selectedText) return
 
-    const range = selection.getRangeAt(0)
-    const textContent = textRef.current?.textContent || ""
+      const range = selection.getRangeAt(0)
+      const textContent = textRef.current?.textContent || ""
 
-    // Find the start and end positions in the full text
-    const beforeSelection = textContent.substring(0, range.startOffset)
-    const selectionStart = beforeSelection.length
-    const selectionEnd = selectionStart + selectedText.length
+      // Find the start and end positions in the full text
+      const beforeSelection = textContent.substring(0, range.startOffset)
+      const selectionStart = beforeSelection.length
+      const selectionEnd = selectionStart + selectedText.length
 
-    setSelectedText(selectedText)
-    setSelectionStart(selectionStart)
-    setSelectionEnd(selectionEnd)
-    setShowRegenerateDialog(true)
+      setSelectedText(selectedText)
+      setSelectionStart(selectionStart)
+      setSelectionEnd(selectionEnd)
+      setShowRegenerateDialog(true)
+    }, 100)
   }
 
   const regenerateSelection = async () => {
@@ -521,8 +524,37 @@ export default function PodcastBuilder() {
       }
     }
 
+    const handleSelectionChange = () => {
+      const selection = window.getSelection()
+      if (!selection || selection.rangeCount === 0) return
+
+      const selectedText = selection.toString().trim()
+      if (!selectedText) return
+
+      // Check if the selection is within our text container
+      const range = selection.getRangeAt(0)
+      if (!textRef.current?.contains(range.commonAncestorContainer)) return
+
+      const textContent = textRef.current?.textContent || ""
+
+      // Find the start and end positions in the full text
+      const beforeSelection = textContent.substring(0, range.startOffset)
+      const selectionStart = beforeSelection.length
+      const selectionEnd = selectionStart + selectedText.length
+
+      setSelectedText(selectedText)
+      setSelectionStart(selectionStart)
+      setSelectionEnd(selectionEnd)
+      setShowRegenerateDialog(true)
+    }
+
     window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
+    document.addEventListener("selectionchange", handleSelectionChange)
+    
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown)
+      document.removeEventListener("selectionchange", handleSelectionChange)
+    }
   }, [historyIndex, history])
 
   return (
@@ -601,8 +633,9 @@ export default function PodcastBuilder() {
             <CardContent>
               <div
                 ref={textRef}
-                className="text-base leading-relaxed select-text cursor-text"
+                className="text-base leading-relaxed select-text-mobile cursor-text"
                 onMouseUp={handleTextSelection}
+                onTouchEnd={handleTextSelection}
               >
                 {words.map((word, index) => {
                   const isInRegeneratedSegment = audioSegments.some(
