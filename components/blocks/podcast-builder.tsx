@@ -37,6 +37,7 @@ export default function PodcastBuilder() {
   const [showRegenerateDialog, setShowRegenerateDialog] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
   const [showMergeDialog, setShowMergeDialog] = useState(false)
+  const [isMerging, setIsMerging] = useState(false)
   const [mergePreview, setMergePreview] = useState<MergePreview | null>(null)
   const [mergePreviewUrl, setMergePreviewUrl] = useState<string>("")
   const [mergePreviewBlob, setMergePreviewBlob] = useState<Blob | null>(null)
@@ -282,6 +283,7 @@ export default function PodcastBuilder() {
   const confirmMerge = async () => {
     if (!mergePreview) return
 
+    setIsMerging(true)
     try {
       // Create the merged audio and apply it to main audio
       const mergedUrl = await createMergedFromCurrent(mergePreview.newSegment)
@@ -330,6 +332,8 @@ export default function PodcastBuilder() {
     } catch (error) {
       console.error("Error merging audio:", error)
       alert(`Error: ${error instanceof Error ? error.message : "Unknown error"}`)
+    } finally {
+      setIsMerging(false)
     }
   }
 
@@ -521,6 +525,9 @@ export default function PodcastBuilder() {
           onConfirmMerge={confirmMerge}
           mergePreviewUrl={mergePreviewUrl}
           mergePreviewBlob={mergePreviewBlob}
+          isMerging={isMerging}
+          originalAudioBlob={audioData?.blob}
+          originalAudioDurationSec={audioData?.duration}
         />
 
         <ExportDialog

@@ -27,28 +27,6 @@ export function ScriptPlayback({
 }: ScriptPlaybackProps) {
   const textRef = useRef<HTMLDivElement>(null)
 
-  // Add selection change listener for better mobile support
-  useEffect(() => {
-    const handleSelectionChange = () => {
-      const selection = window.getSelection()
-      if (!selection || selection.rangeCount === 0) return
-      
-      const text = selection.toString().trim()
-      if (!text) return
-      
-      // Check if selection is within our text container
-      const range = selection.getRangeAt(0)
-      if (!textRef.current?.contains(range.commonAncestorContainer)) return
-      
-      // Trigger selection handler with a small delay for mobile
-      setTimeout(() => {
-        onTextSelection()
-      }, 50)
-    }
-
-    document.addEventListener('selectionchange', handleSelectionChange)
-    return () => document.removeEventListener('selectionchange', handleSelectionChange)
-  }, [onTextSelection])
 
   return (
     <Card>
