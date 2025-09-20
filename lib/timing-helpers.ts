@@ -16,6 +16,128 @@ export const getTranscriptLexicalWords = (transcript?: TranscriptData | null): {
     .filter((w) => w.text.length > 0)
 }
 
+// Alignment structure mapping between script words and transcript lexical words
+export interface WordAlignment {
+  // For each script word index, the aligned transcript lexical index or -1
+  scriptToTranscript: number[]
+  // For each transcript lexical index, the aligned script word index or -1
+  transcriptToScript: number[]
+}
+
+// Build a monotonic alignment between script words and transcript lexical words
+// Strategy: greedy left-to-right match of normalized tokens, allowing gaps on either side
+export const buildScriptTranscriptAlignment = (
+  scriptWords: string[],
+  transcript?: TranscriptData | null
+): WordAlignment => {
+  const lex = getTranscriptLexicalWords(transcript)
+  const scriptTokens = scriptWords.map(normalizeToken)
+
+  const scriptToTranscript: number[] = new Array(scriptWords.length).fill(-1)
+  const transcriptToScript: number[] = new Array(lex.length).fill(-1)
+
+  let tCursor = 0
+  for (let sIdx = 0; sIdx < scriptTokens.length; sIdx++) {
+    const token = scriptTokens[sIdx]
+    if (!token) {
+      continue
+    }
+    // advance transcript cursor until we find a matching token
+    while (tCursor < lex.length && lex[tCursor].text !== token) {
+      tCursor++
+    }
+    if (tCursor < lex.length && lex[tCursor].text === token) {
+      scriptToTranscript[sIdx] = tCursor
+      if (transcriptToScript[tCursor] === -1) {
+        transcriptToScript[tCursor] = sIdx
+      }
+      tCursor++
+    } else {
+      // no more matches; break to keep monotonicity, remainder stay -1
+      break
+    }
+  }
+
+  // Backfill unmatched trailing script words by looking ahead independently (non-monotonic rescue)
+  // Useful when earlier mismatches caused an early break
+  for (let sIdx = 0; sIdx < scriptTokens.length; sIdx++) {
+    if (scriptToTranscript[sIdx] !== -1) continue
+    const token = scriptTokens[sIdx]
+    if (!token) continue
+    // search globally for nearest matching transcript token
+    let bestIdx = -1
+    let bestDist = Number.POSITIVE_INFINITY
+    for (let k = 0; k < lex.length; k++) {
+      if (lex[k].text === token) {
+        // prefer the closest transcript index to maintain local coherence
+        const dist = Math.min(
+          sIdx,
+          scriptTokens.length - 1 - sIdx
+        ) + Math.min(k, lex.length - 1 - k)
+        if (dist < bestDist) {
+          bestDist = dist
+          bestIdx = k
+        }
+      }
+    }
+    if (bestIdx !== -1) {
+      scriptToTranscript[sIdx] = bestIdx
+      if (transcriptToScript[bestIdx] === -1) {
+        transcriptToScript[bestIdx] = sIdx
+      }
+    }
+  }
+
+  return { scriptToTranscript, transcriptToScript }
+}
+
+// Binary search the transcript lexical words to find word index at or before time
+export const findTranscriptIndexAtTime = (
+  transcript: TranscriptData | null | undefined,
+  time: number
+): number => {
+  const lex = getTranscriptLexicalWords(transcript)
+  if (lex.length === 0 || !isFinite(time)) return -1
+  let lo = 0
+  let hi = lex.length - 1
+  let ans = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const w = lex[mid]
+    if (time < w.start) {
+      hi = mid - 1
+    } else if (time > w.end) {
+      ans = mid
+      lo = mid + 1
+    } else {
+      // time within [start, end]
+      return mid
+    }
+  }
+  return ans
+}
+
+// Given a transcript word index and alignment, return best matching script index
+export const mapTranscriptIndexToScript = (
+  transcriptIndex: number,
+  alignment: WordAlignment
+): number => {
+  const { transcriptToScript } = alignment
+  if (transcriptIndex < 0 || transcriptIndex >= transcriptToScript.length) return -1
+  const direct = transcriptToScript[transcriptIndex]
+  if (direct !== -1) return direct
+  // search nearest neighbor that has a mapping
+  let left = transcriptIndex - 1
+  let right = transcriptIndex + 1
+  while (left >= 0 || right < transcriptToScript.length) {
+    if (left >= 0 && transcriptToScript[left] !== -1) return transcriptToScript[left]
+    if (right < transcriptToScript.length && transcriptToScript[right] !== -1) return transcriptToScript[right]
+    left--
+    right++
+  }
+  return -1
+}
+
 // Get precise word timing from transcript
 export const getWordTimingFromTranscript = (
   wordIndex: number, 

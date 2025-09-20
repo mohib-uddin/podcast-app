@@ -1,12 +1,52 @@
-import { useState, useRef, useCallback } from 'react'
-import { AudioData, TranscriptData } from '@/lib/types'
-import { getWordTimingFromTranscript } from '@/lib/timing-helpers'
+import { useState, useRef, useCallback, useMemo } from 'react'
+import { AudioData } from '@/lib/types'
+import { 
+  buildScriptTranscriptAlignment,
+  findTranscriptIndexAtTime,
+  getTranscriptLexicalWords,
+  mapTranscriptIndexToScript
+} from '@/lib/timing-helpers'
 
 export const useAudioPlayer = () => {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [highlightedWordIndex, setHighlightedWordIndex] = useState(-1)
   const audioRef = useRef<HTMLAudioElement>(null)
+  const lastWordsSigRef = useRef<string>('')
+  const lastTranscriptSigRef = useRef<string>('')
+  const alignmentCacheRef = useRef<ReturnType<typeof buildScriptTranscriptAlignment> | null>(null)
+
+  const getOrBuildAlignment = useCallback((
+    words: string[],
+    transcript: AudioData['transcript']
+  ) => {
+    // Build lightweight signatures to avoid recomputing on every timeupdate
+    const wordsSig = (() => {
+      const len = words.length
+      if (len === 0) return 'w:0'
+      const first = words.slice(0, Math.min(10, len)).join('\u241F')
+      const last = words.slice(Math.max(0, len - 10)).join('\u241F')
+      return `w:${len}|${first}|${last}`
+    })()
+    const transcriptSig = (() => {
+      if (!transcript || !transcript.words || transcript.words.length === 0) return 't:0'
+      const len = transcript.words.length
+      const first = transcript.words[0]
+      const last = transcript.words[len - 1]
+      return `t:${len}|${first.start}:${first.end}|${last.start}:${last.end}`
+    })()
+
+    const sameWords = lastWordsSigRef.current === wordsSig
+    const sameTranscript = lastTranscriptSigRef.current === transcriptSig
+    if (sameWords && sameTranscript && alignmentCacheRef.current) {
+      return alignmentCacheRef.current
+    }
+    const built = buildScriptTranscriptAlignment(words, transcript)
+    alignmentCacheRef.current = built
+    lastWordsSigRef.current = wordsSig
+    lastTranscriptSigRef.current = transcriptSig
+    return built
+  }, [])
 
   const togglePlayPause = useCallback(() => {
     if (!audioRef.current) return
@@ -35,12 +75,19 @@ export const useAudioPlayer = () => {
     if (!audioRef.current) return
     
     let startTime: number
-    const preciseStartTiming = getWordTimingFromTranscript(wordIndex, audioData?.transcript)
-    
-    if (preciseStartTiming) {
-      startTime = preciseStartTiming.start
+    const transcript = audioData?.transcript
+    if (transcript) {
+      const alignment = getOrBuildAlignment(words, transcript)
+      const lex = getTranscriptLexicalWords(transcript)
+      const tIdx = alignment.scriptToTranscript[wordIndex] ?? -1
+      if (tIdx !== -1 && tIdx < lex.length) {
+        startTime = lex[tIdx].start
+      } else {
+        const totalDuration = audioRef.current.duration || audioData?.duration || 0
+        const progress = wordIndex / Math.max(1, words.length)
+        startTime = progress * totalDuration
+      }
     } else {
-      // Fallback to uniform mapping
       const totalDuration = audioRef.current.duration || audioData?.duration || 0
       const progress = wordIndex / Math.max(1, words.length)
       startTime = progress * totalDuration
@@ -58,31 +105,27 @@ export const useAudioPlayer = () => {
     const time = audioRef.current.currentTime
     setCurrentTime(time)
 
-    // Use transcript timing for more accurate highlighting if available
+    // Use transcript timing with alignment for accurate highlighting
     let highlightIndex = -1
-    
-    if (audioData?.transcript?.words) {
-      // Find the word that should be highlighted based on current time
-      for (let i = 0; i < audioData.transcript.words.length && i < words.length; i++) {
-        const word = audioData.transcript.words[i]
-        if (time >= word.start && time <= word.end) {
-          highlightIndex = i
-          break
-        }
-        if (time > word.start && (i === audioData.transcript.words.length - 1 || time < audioData.transcript.words[i + 1].start)) {
-          highlightIndex = i
-          break
+    const transcript = audioData?.transcript
+    if (transcript) {
+      const alignment = getOrBuildAlignment(words, transcript)
+      const tIdx = findTranscriptIndexAtTime(transcript, time)
+      if (tIdx !== -1) {
+        const sIdx = mapTranscriptIndexToScript(tIdx, alignment)
+        if (sIdx !== -1) {
+          highlightIndex = Math.max(0, Math.min(words.length - 1, sIdx))
         }
       }
     }
-    
-    // Fallback to uniform mapping if no transcript or word not found
+
+    // Fallback to uniform mapping if mapping fails
     if (highlightIndex === -1) {
-      const duration = Math.max(1e-6, audioRef.current.duration || 0)
-      const progress = time / duration
+      const duration = Math.max(1e-6, audioRef.current.duration || audioData?.duration || 0)
+      const progress = duration > 0 ? time / duration : 0
       highlightIndex = Math.max(0, Math.min(words.length - 1, Math.floor(progress * words.length)))
     }
-    
+
     setHighlightedWordIndex(highlightIndex)
   }, [])
 
