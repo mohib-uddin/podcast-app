@@ -294,34 +294,39 @@ export default function PodcastBuilder() {
         
         // Re-transcribe the merged audio
         const mergedTranscript = await generateTranscriptForAudio(mergedBlob)
-        
-        setAudioData({ 
+
+        const nextAudioData = { 
           url: URL.createObjectURL(mergedBlob), 
           duration: buf.duration, 
           waveform: audioData!.waveform, 
           blob: mergedBlob,
           transcript: mergedTranscript || audioData!.transcript || null,
-        })
+        } as const
+
+        setAudioData(nextAudioData)
       }
 
       // Update segments
-      setAudioSegments((prev) => {
-        const newSegment = mergePreview.newSegment
-        
-        // Remove segments that overlap with the new segment
-        const filtered = prev.filter((seg) => {
-          return seg.endIndex <= newSegment.startIndex || seg.startIndex >= newSegment.endIndex
-        })
-        
-        // Add the new segment
-        return [...filtered, newSegment].sort((a, b) => a.startIndex - b.startIndex)
+      const newSegment = mergePreview.newSegment
+      const filtered = audioSegments.filter((seg) => {
+        return seg.endIndex <= newSegment.startIndex || seg.startIndex >= newSegment.endIndex
       })
+      const nextSegments = [...filtered, newSegment].sort((a, b) => a.startIndex - b.startIndex)
+
+      setAudioSegments(nextSegments)
 
       setShowMergeDialog(false)
       setMergePreview(null)
       
       const segmentText = selectedText.substring(0, 20) + (selectedText.length > 20 ? "..." : "")
-      saveToHistory(`Merge "${segmentText}"`, script, audioData!, audioSegments)
+      // Save the post-merge state snapshot to history for reliable undo/redo
+      saveToHistory(`Merge "${segmentText}"`, script, {
+        url: audioData?.url || '',
+        duration: audioData?.duration || 0,
+        waveform: audioData?.waveform || [],
+        blob: audioData?.blob,
+        transcript: audioData?.transcript || null,
+      }, nextSegments)
     } catch (error) {
       console.error("Error merging audio:", error)
       alert(`Error: ${error instanceof Error ? error.message : "Unknown error"}`)
