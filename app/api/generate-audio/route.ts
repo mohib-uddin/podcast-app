@@ -1,5 +1,58 @@
 import { type NextRequest, NextResponse } from "next/server"
 
+interface WordTiming {
+  text: string
+  start: number
+  end: number
+  type: "word"
+  speaker_id: string
+  logprob: number
+}
+
+interface TranscriptResponse {
+  language_code: string
+  language_probability: number
+  text: string
+  words: WordTiming[]
+}
+
+async function generateTranscript(audioBuffer: ArrayBuffer): Promise<TranscriptResponse | null> {
+  try {
+    const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
+    if (!ELEVENLABS_API_KEY) {
+      console.warn("ELEVENLABS_API_KEY not available for transcript generation")
+      return null
+    }
+
+    // Convert ArrayBuffer to Blob for FormData
+    const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' })
+    
+    // Create form data for ElevenLabs Speech-to-Text API
+    const formData = new FormData()
+    formData.append('file', audioBlob, 'audio.mp3')
+    formData.append('model_id', 'scribe_v1')
+
+    const response = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+      method: 'POST',
+      headers: {
+        'xi-api-key': ELEVENLABS_API_KEY,
+      },
+      body: formData,
+    })
+
+    if (!response.ok) {
+      console.error("Speech-to-text failed:", response.status, response.statusText)
+      return null
+    }
+
+    const transcriptData: TranscriptResponse = await response.json()
+    return transcriptData
+  } catch (error) {
+    console.error("Error generating transcript:", error)
+    return null
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { text } = await request.json()
@@ -60,13 +113,22 @@ export async function POST(request: NextRequest) {
 
     const audioBuffer = await response.arrayBuffer()
 
+    // Generate transcript with word timings
+    const transcript = await generateTranscript(audioBuffer)
+
     // Convert to base64 for client-side usage
     const base64Audio = Buffer.from(audioBuffer).toString("base64")
     const audioUrl = `data:audio/mpeg;base64,${base64Audio}`
 
-    // Estimate duration based on text length (rough approximation: ~150 words per minute)
+    // Use transcript duration if available, otherwise estimate
     const wordCount = text.split(/\s+/).filter((word: string) => word.length > 0).length
-    const estimatedDuration = Math.max(1, (wordCount / 150) * 60)
+    let actualDuration = Math.max(1, (wordCount / 150) * 60) // fallback estimation
+    
+    if (transcript && transcript.words.length > 0) {
+      // Get actual duration from transcript
+      const lastWord = transcript.words[transcript.words.length - 1]
+      actualDuration = Math.max(1, lastWord.end)
+    }
     
     // Generate more realistic waveform data based on text characteristics
     const waveformLength = Math.max(50, Math.min(200, wordCount * 2))
@@ -79,9 +141,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       url: audioUrl,
-      duration: estimatedDuration,
+      duration: actualDuration,
       waveform,
       wordCount,
+      transcript: transcript || null, // Include transcript data if available
     })
   } catch (error) {
     console.error("Error generating audio:", error)
