@@ -131,35 +131,38 @@ export default function PodcastBuilder() {
 
   // Handle text selection
   const handleTextSelection = () => {
-    const selection = window.getSelection()
-    if (!selection || selection.rangeCount === 0) return
+    // Add a small delay to ensure selection is complete on mobile
+    setTimeout(() => {
+      const selection = window.getSelection()
+      if (!selection || selection.rangeCount === 0) return
 
-    const text = selection.toString().trim()
-    if (!text) return
+      const text = selection.toString().trim()
+      if (!text) return
 
-    const getIndexFromNode = (node: Node | null): number | null => {
-      if (!node) return null
-      let el: HTMLElement | null = (node as HTMLElement).nodeType === 1 ? (node as HTMLElement) : (node.parentElement as HTMLElement | null)
-      while (el) {
-        if (el.dataset && el.dataset.wordIndex) return parseInt(el.dataset.wordIndex, 10)
-        el = el.parentElement
+      const getIndexFromNode = (node: Node | null): number | null => {
+        if (!node) return null
+        let el: HTMLElement | null = (node as HTMLElement).nodeType === 1 ? (node as HTMLElement) : (node.parentElement as HTMLElement | null)
+        while (el) {
+          if (el.dataset && el.dataset.wordIndex) return parseInt(el.dataset.wordIndex, 10)
+          el = el.parentElement
+        }
+        return null
       }
-      return null
-    }
 
-    const anchorIndex = getIndexFromNode(selection.anchorNode)
-    const focusIndex = getIndexFromNode(selection.focusNode)
-    if (anchorIndex === null || focusIndex === null) return
+      const anchorIndex = getIndexFromNode(selection.anchorNode)
+      const focusIndex = getIndexFromNode(selection.focusNode)
+      if (anchorIndex === null || focusIndex === null) return
 
-    const startIdx = Math.max(0, Math.min(anchorIndex, focusIndex))
-    const endIdxExclusive = Math.min(words.length, Math.max(anchorIndex, focusIndex) + 1)
+      const startIdx = Math.max(0, Math.min(anchorIndex, focusIndex))
+      const endIdxExclusive = Math.min(words.length, Math.max(anchorIndex, focusIndex) + 1)
 
-    const selected = words.slice(startIdx, endIdxExclusive).join(" ")
+      const selected = words.slice(startIdx, endIdxExclusive).join(" ")
 
-    setSelectedText(selected)
-    setSelectedStartIndex(startIdx)
-    setSelectedEndIndex(endIdxExclusive)
-    setShowRegenerateDialog(true)
+      setSelectedText(selected)
+      setSelectedStartIndex(startIdx)
+      setSelectedEndIndex(endIdxExclusive)
+      setShowRegenerateDialog(true)
+    }, 100) // Small delay for mobile devices
   }
 
   // Play selected text

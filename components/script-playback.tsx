@@ -1,4 +1,4 @@
-import { useRef } from "react"
+import { useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Play, RefreshCw } from "lucide-react"
@@ -27,6 +27,29 @@ export function ScriptPlayback({
 }: ScriptPlaybackProps) {
   const textRef = useRef<HTMLDivElement>(null)
 
+  // Add selection change listener for better mobile support
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const selection = window.getSelection()
+      if (!selection || selection.rangeCount === 0) return
+      
+      const text = selection.toString().trim()
+      if (!text) return
+      
+      // Check if selection is within our text container
+      const range = selection.getRangeAt(0)
+      if (!textRef.current?.contains(range.commonAncestorContainer)) return
+      
+      // Trigger selection handler with a small delay for mobile
+      setTimeout(() => {
+        onTextSelection()
+      }, 50)
+    }
+
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => document.removeEventListener('selectionchange', handleSelectionChange)
+  }, [onTextSelection])
+
   return (
     <Card>
       <CardHeader>
@@ -50,8 +73,25 @@ export function ScriptPlayback({
       <CardContent>
         <div
           ref={textRef}
-          className="text-base leading-relaxed select-text cursor-text"
+          className="text-base leading-relaxed select-text cursor-text touch-manipulation"
+          style={{
+            WebkitUserSelect: 'text',
+            userSelect: 'text',
+            WebkitTouchCallout: 'default'
+          }}
           onMouseUp={onTextSelection}
+          onTouchEnd={(e) => {
+            // Prevent default touch behavior that might interfere with text selection
+            e.preventDefault()
+            // Small delay to ensure selection is complete
+            setTimeout(() => {
+              onTextSelection()
+            }, 100)
+          }}
+          onTouchStart={(e) => {
+            // Allow text selection to work properly on mobile
+            e.stopPropagation()
+          }}
         >
           {words.map((word, index) => (
             <span
